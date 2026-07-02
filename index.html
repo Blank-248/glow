@@ -341,14 +341,16 @@ function defaultProducts(){
 
 function defaultState(){
   return {
-    stage:1,
+    v:2,
+    stage:2,
     startDate:null,          // first launch (set on load)
-    unlocked:{reedle:false, mandelic:false, zeropore:false},
+    unlocked:{reedle:true, mandelic:true, zeropore:true},
     unlockDates:{},          // activeId -> 'YYYY-MM-DD'
-    schedule:{0:"reedle",1:"mandelic",2:"reedle",3:null,4:"zeropore",5:"reedle",6:null}, // 0=Sun..6=Sat
+    rotation:["mandelic","reedle",null,"zeropore","reedle",null,"reedle"], // repeating nightly cycle; null = rest
+    rotationStart:null,      // anchor date for the cycle (set on load)
     products:defaultProducts(),
     routines:{
-      amFull:["amCleanse","carrotPad","galacNiacin","puritoCream","skin1004Sun"],
+      amFull:["manyoFoam","puritoCream","skin1004Sun"],
       amLazy:["lazySplash","puritoCream","skin1004Sun"],
       pm:["manyoOil","manyoFoam","carrotPad","galacNiacin","genabelle","puritoCream"],
       actives:["reedle","mandelic","zeropore"]
@@ -364,20 +366,35 @@ function load(){
   try{
     const raw = localStorage.getItem(KEY);
     if(!raw) return defaultState();
-    return mergeState(JSON.parse(raw));
+    return migrate(mergeState(JSON.parse(raw)));
   }catch(e){ return defaultState(); }
 }
 function mergeState(s){
   const d = defaultState();
   return Object.assign(d, s, {
+    v:s.v||0,
     products:Object.assign(d.products, s.products||{}),
     routines:Object.assign(d.routines, s.routines||{}),
     unlocked:Object.assign(d.unlocked, s.unlocked||{}),
     unlockDates:Object.assign({}, s.unlockDates||{}),
-    schedule:Object.assign(d.schedule, s.schedule||{}),
+    rotation:(Array.isArray(s.rotation)&&s.rotation.length)?s.rotation:d.rotation,
+    rotationStart:s.rotationStart||null,
     records:s.records||{},
     startDate:s.startDate||null
   });
+}
+/* upgrade older saves (weekday schedule era) to the rotation model */
+function migrate(st){
+  if(!st.v || st.v<2){
+    st.stage=2;
+    (st.routines.actives||[]).forEach(id=>{ st.unlocked[id]=true; });
+    st.unlockDates={};
+    st.routines.amFull=["manyoFoam","puritoCream","skin1004Sun"];
+    st.rotation=["mandelic","reedle",null,"zeropore","reedle",null,"reedle"];
+    st.rotationStart=null;
+    st.v=2;
+  }
+  return st;
 }
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} }
 
@@ -391,6 +408,7 @@ function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; 
 function sameDay(a,b){ return keyOf(a)===keyOf(b); }
 function isToday(d){ return sameDay(d,new Date()); }
 function daysSince(k){ return Math.round((parseKey(keyOf(new Date())) - parseKey(k))/86400000); }
+function dayDiff(fromKey,d){ return Math.round((parseKey(keyOf(d)) - parseKey(fromKey))/86400000); }
 
 /* ============================ Record access ============================ */
 function recFor(k){
@@ -404,10 +422,29 @@ function amDone(k){ const r=state.records[k]; if(!r) return false; const list=am
 function pmDone(k){ const r=state.records[k]; if(!r) return false; const list=state.routines.pm; return list.length>0 && list.every(id=>r.pm&&r.pm[id]); }
 function checkedActives(k){ const r=state.records[k]; if(!r||!r.pm) return []; return state.routines.actives.filter(id=>r.pm[id]); }
 function unlockedActives(){ return state.routines.actives.filter(id=>state.unlocked[id]); }
+function rotIndexFor(d){
+  const len=(state.rotation||[]).length;
+  if(!len || !state.rotationStart) return -1;
+  const diff=dayDiff(state.rotationStart,d);
+  return ((diff%len)+len)%len;
+}
 function scheduledActiveFor(d){
   if(state.stage<2) return null;
-  const aid=state.schedule[d.getDay()];
+  const i=rotIndexFor(d);
+  if(i<0) return null;
+  const aid=state.rotation[i];
   return (aid && state.unlocked[aid]) ? aid : null;
+}
+/* evening list with tonight's active slotted in at the right step (straight after cleansing) */
+function pmDisplayList(d){
+  const list=state.routines.pm.slice();
+  const tonight=scheduledActiveFor(d);
+  if(tonight && !list.includes(tonight)){
+    let ins=0;
+    list.forEach((id,i)=>{ const p=state.products[id]; if(p&&p.kind==="cleanse") ins=i+1; });
+    list.splice(ins,0,tonight);
+  }
+  return {list, tonight};
 }
 const SUGGESTED_ORDER=["reedle","mandelic","zeropore"];
 function nextLockedActive(){ return SUGGESTED_ORDER.find(id=>state.products[id] && !state.unlocked[id]) || null; }
@@ -557,9 +594,7 @@ function todayHTML(){
   }else if(tonight){
     tb=`<div class="tonight active-set"><div class="ic">✨</div><div><div class="lbl">Tonight's active</div><div class="val">${esc(state.products[tonight].name)}</div></div></div>`;
   }else{
-    const aid=state.schedule[selDate.getDay()];
-    const why = aid && !state.unlocked[aid] ? "Rest night — that active isn't unlocked yet" : "Rest night — gentle base only";
-    tb=`<div class="tonight rest"><div class="ic">🌙</div><div><div class="lbl">Tonight</div><div class="val">${why}</div></div></div>`;
+    tb=`<div class="tonight rest"><div class="ic">🌙</div><div><div class="lbl">Tonight</div><div class="val">Rest night — gentle base only</div></div></div>`;
   }
   const label = isToday(selDate) ? "TODAY" : (selDate>new Date() ? "Upcoming" : "Past day");
   const k=keyOf(selDate);
@@ -609,7 +644,7 @@ function guideHTML(){
         const db=state.unlockDates[b]!=null?daysSince(state.unlockDates[b]):999;
         return db<da?b:a;
       });
-      lastDays = state.unlockDates[lastId]!=null?daysSince(state.unlockDates[lastId]):0;
+      lastDays = state.unlockDates[lastId]!=null?daysSince(state.unlockDates[lastId]):999;
       if(lastDays<=2){
         cls="warn"; icon="🧪"; title="New active — go slow";
         body=`You just added <b>${firstName(lastId)}</b>. Patch-test first, use it only 2–3 nights this week, and watch for stinging or lasting redness. ${next?`Hold off on your next active for about 2 weeks.`:``}`;
@@ -682,26 +717,13 @@ function spfPanel(){
 
 function pmHTML(){
   const k=keyOf(selDate), r=recFor(k);
-  const base=state.routines.pm;
-  let activesBlock="";
-  if(state.stage>=2){
-    const ul=unlockedActives(), tonight=scheduledActiveFor(selDate);
-    if(ul.length){
-      activesBlock=`
-      <div class="actives-wrap">
-        <div class="ah"><div class="dot"></div><h3>Active</h3></div>
-        <div class="sub">Only ONE active per night — tonight's schedule is marked below.</div>
-        <div class="steps">${ul.map(id=>activeStepHTML(id,tonight)).join("")}</div>
-      </div>`;
-    }else{
-      activesBlock=`<div class="locked-note">You're in Stage 2 but haven't unlocked any actives yet. Open <b>Settings → Actives</b> to unlock your first one (start with the Reedle Shot).</div>`;
-    }
-  }
+  const {list,tonight}=pmDisplayList(selDate);
+  const done=list.filter(id=>r.pm[id]).length;
   return `
   <div class="card pm">
-    <div class="sec-h pm"><div class="dot"></div><h2>Evening</h2><div class="count">${base.filter(id=>r.pm[id]).length}/${base.length}</div></div>
-    <div class="steps">${base.map(id=>stepHTML(id,"pm")).join("")}</div>
-    ${activesBlock}
+    <div class="sec-h pm"><div class="dot"></div><h2>Evening</h2><div class="count">${done}/${list.length}</div></div>
+    <div class="steps">${list.map(id=> id===tonight ? activeStepHTML(id,tonight) : stepHTML(id,"pm")).join("")}</div>
+    ${tonight?"":`<div class="locked-note">🌙 Rest night — just the gentle base, no active tonight.</div>`}
   </div>`;
 }
 
@@ -770,17 +792,16 @@ function settingsHTML(){
       <span class="u-txt"><span class="un">${nm}</span><span class="uo">${ord}${since}</span></span></label>`;
   }).join("");
 
-  const ul=unlockedActives();
-  const optHTML=(day)=>{
+  const rotOpts=(v)=>{
     let o=`<option value="">Rest night</option>`;
-    ul.forEach(id=>{ o+=`<option value="${id}" ${state.schedule[day]===id?"selected":""}>${esc(state.products[id].name)}</option>`; });
-    const cur=state.schedule[day];
-    if(cur && !state.unlocked[cur]) o+=`<option value="${cur}" selected>${esc(state.products[cur].name)} (locked)</option>`;
+    state.routines.actives.forEach(id=>{ if(state.unlocked[id]) o+=`<option value="${id}" ${v===id?"selected":""}>${esc(state.products[id].name)}</option>`; });
+    if(v && !state.unlocked[v]) o+=`<option value="${v}" selected>${esc(state.products[v].name)} (locked)</option>`;
     return o;
   };
-  const schedRows=[1,2,3,4,5,6,0].map(day=>`
-    <div class="sched-row"><div class="sd">${WD_SHORT[day]}</div>
-      <select data-day="${day}" ${state.stage<2?"disabled":""}>${optHTML(day)}</select></div>`).join("");
+  const tonightIdx=rotIndexFor(new Date());
+  const rotRows=state.rotation.map((v,i)=>`
+    <div class="sched-row"><div class="sd" style="width:70px;${i===tonightIdx?"color:var(--active-ink)":""}">${i===tonightIdx?"Tonight":"Night "+(i+1)}</div>
+      <select data-rot="${i}">${rotOpts(v)}</select></div>`).join("");
 
   const listBlock=(title,listKey)=>{
     const items=state.routines[listKey].map(id=>{
@@ -819,8 +840,13 @@ function settingsHTML(){
       </div>
 
       <div class="set-block">
-        <h3>Weekly evening schedule</h3>
-        <div>${schedRows}</div>
+        <h3>Evening active rotation</h3>
+        <div class="modehint" style="text-align:left;margin:0 0 8px">The cycle repeats automatically, night after night — nothing to pick day-to-day. Tonight is <b>Night ${tonightIdx+1}</b> of ${state.rotation.length}.</div>
+        <div>${rotRows}</div>
+        <div class="bkp" style="margin-top:10px">
+          <button data-rotadd="1">＋ Add a night</button>
+          <button data-rotrm="1">－ Remove last night</button>
+        </div>
       </div>
 
       <div class="set-block">
@@ -900,7 +926,8 @@ function updateStatusUI(){
   if(pPm){ pPm.classList.toggle("done",pmDone(k)); pPm.querySelector(".v").textContent=pmDone(k)?"Done":"To do"; }
   const amList=amListFor(k);
   const amC=document.querySelector(".card.am .count"); if(amC) amC.textContent=amList.filter(id=>r.am[id]).length+"/"+amList.length;
-  const pmC=document.querySelector(".card.pm .count"); if(pmC) pmC.textContent=state.routines.pm.filter(id=>r.pm[id]).length+"/"+state.routines.pm.length;
+  const pmC=document.querySelector(".card.pm .count");
+  if(pmC){ const {list}=pmDisplayList(selDate); pmC.textContent=list.filter(id=>r.pm[id]).length+"/"+list.length; }
   const wk=document.querySelector(".weekgrid");
   if(wk){ const wrap=document.createElement("div"); wrap.innerHTML=weekHTML(); wk.closest(".card").replaceWith(wrap.firstElementChild); }
 }
@@ -936,12 +963,15 @@ document.addEventListener("click",(e)=>{
   const sb=t.closest("[data-stage]");
   if(sb){ state.stage=parseInt(sb.getAttribute("data-stage"),10); save(); reRenderKeepSettings(); return; }
 
+  if(t.closest("[data-rotadd]")){ state.rotation.push(null); save(); reRenderKeepSettings(); return; }
+  if(t.closest("[data-rotrm]")){ if(state.rotation.length>1){ state.rotation.pop(); save(); reRenderKeepSettings(); } return; }
+
   if(t.closest("[data-export]")){ exportBackup(); return; }
   if(t.closest("[data-import]")){ document.getElementById("importFile").click(); return; }
 
   if(t.closest("[data-reset]")){
     if(confirm("Reset ALL products, schedule and check-off history to defaults? This can't be undone.")){
-      state=defaultState(); state.startDate=keyOf(new Date()); selDate=new Date(); save(); render();
+      state=defaultState(); state.startDate=keyOf(new Date()); state.rotationStart=keyOf(new Date()); selDate=new Date(); save(); render();
     }
     return;
   }
@@ -969,11 +999,10 @@ document.addEventListener("change",(e)=>{
     else { delete state.unlockDates[unl]; }
     save(); reRenderKeepSettings(); return;
   }
-  const day=t.getAttribute && t.getAttribute("data-day");
-  if(day!=null && t.tagName==="SELECT"){
-    state.schedule[parseInt(day,10)] = t.value || null; save();
-    const wrap=document.createElement("div"); wrap.innerHTML=todayHTML();
-    document.querySelector(".card.today").replaceWith(wrap.firstElementChild); return;
+  const rot=t.getAttribute && t.getAttribute("data-rot");
+  if(rot!=null && t.tagName==="SELECT"){
+    state.rotation[parseInt(rot,10)] = t.value || null; save();
+    reRenderKeepSettings(); return;
   }
 });
 
@@ -1059,7 +1088,9 @@ function importBackup(file){
       const data=JSON.parse(reader.result);
       if(!data || !data.products || !data.routines) throw new Error("bad file");
       if(confirm("Replace your current data with this backup?")){
-        state=mergeState(data); if(!state.startDate) state.startDate=keyOf(new Date());
+        state=migrate(mergeState(data));
+        if(!state.startDate) state.startDate=keyOf(new Date());
+        if(!state.rotationStart) state.rotationStart=keyOf(new Date());
         selDate=new Date(); save(); render(); toast("✓ Backup restored");
       }
     }catch(e){ toast("That doesn't look like a Glow backup file"); }
@@ -1068,7 +1099,11 @@ function importBackup(file){
 }
 
 /* ============================ Go ============================ */
-if(!state.startDate){ state.startDate=keyOf(new Date()); save(); }
+if(!state.startDate || !state.rotationStart){
+  if(!state.startDate) state.startDate=keyOf(new Date());
+  if(!state.rotationStart) state.rotationStart=keyOf(new Date());
+  save();
+}
 render();
 </script>
 </body>
