@@ -341,7 +341,7 @@ function defaultProducts(){
 
 function defaultState(){
   return {
-    v:2,
+    v:3,
     stage:2,
     startDate:null,          // first launch (set on load)
     unlocked:{reedle:true, mandelic:true, zeropore:true},
@@ -350,8 +350,8 @@ function defaultState(){
     rotationStart:null,      // anchor date for the cycle (set on load)
     products:defaultProducts(),
     routines:{
-      amFull:["manyoFoam","puritoCream","skin1004Sun"],
-      amLazy:["lazySplash","puritoCream","skin1004Sun"],
+      amFull:["amCleanse","carrotPad","galacNiacin","puritoCream","skin1004Sun"],
+      amLazy:["manyoFoam","puritoCream","skin1004Sun"],
       pm:["manyoOil","manyoFoam","carrotPad","galacNiacin","genabelle","puritoCream"],
       actives:["reedle","mandelic","zeropore"]
     },
@@ -389,10 +389,13 @@ function migrate(st){
     st.stage=2;
     (st.routines.actives||[]).forEach(id=>{ st.unlocked[id]=true; });
     st.unlockDates={};
-    st.routines.amFull=["manyoFoam","puritoCream","skin1004Sun"];
     st.rotation=["mandelic","reedle",null,"zeropore","reedle",null,"reedle"];
     st.rotationStart=null;
-    st.v=2;
+  }
+  if(!st.v || st.v<3){
+    st.routines.amFull=["amCleanse","carrotPad","galacNiacin","puritoCream","skin1004Sun"];
+    st.routines.amLazy=["manyoFoam","puritoCream","skin1004Sun"];
+    st.v=3;
   }
   return st;
 }
@@ -1099,11 +1102,9 @@ function importBackup(file){
 }
 
 /* ============================ Go ============================ */
-if(!state.startDate || !state.rotationStart){
-  if(!state.startDate) state.startDate=keyOf(new Date());
-  if(!state.rotationStart) state.rotationStart=keyOf(new Date());
-  save();
-}
+if(!state.startDate) state.startDate=keyOf(new Date());
+if(!state.rotationStart) state.rotationStart=keyOf(new Date());
+save();   // also persists any just-run migration
 render();
 </script>
 </body>
