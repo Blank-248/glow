@@ -93,8 +93,8 @@
   /* ---- Mode toggle ---- */
   .modetoggle{display:flex; background:var(--bg); border-radius:999px; padding:4px; margin-top:14px;}
   .modetoggle button{
-    flex:1; border:none; background:transparent; padding:9px 0; border-radius:999px;
-    font-size:14px; font-weight:700; color:var(--muted); cursor:pointer; transition:.2s;
+    flex:1; border:none; background:transparent; padding:9px 2px; border-radius:999px;
+    font-size:13.5px; font-weight:700; color:var(--muted); cursor:pointer; transition:.2s; white-space:nowrap;
   }
   .modetoggle button.sel{background:var(--am); color:#fff; box-shadow:var(--shadow-sm);}
   .modehint{font-size:12.5px; color:var(--muted); margin-top:8px; text-align:center;}
@@ -341,7 +341,7 @@ function defaultProducts(){
 
 function defaultState(){
   return {
-    v:3,
+    v:4,
     stage:2,
     startDate:null,          // first launch (set on load)
     unlocked:{reedle:true, mandelic:true, zeropore:true},
@@ -397,6 +397,10 @@ function migrate(st){
     st.routines.amLazy=["manyoFoam","puritoCream","skin1004Sun"];
     st.v=3;
   }
+  if(!st.v || st.v<4){
+    st.rotationStart=mondayAnchor();   // pin Night 1 (index 0) to Monday
+    st.v=4;
+  }
   return st;
 }
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} }
@@ -412,6 +416,7 @@ function sameDay(a,b){ return keyOf(a)===keyOf(b); }
 function isToday(d){ return sameDay(d,new Date()); }
 function daysSince(k){ return Math.round((parseKey(keyOf(new Date())) - parseKey(k))/86400000); }
 function dayDiff(fromKey,d){ return Math.round((parseKey(keyOf(d)) - parseKey(fromKey))/86400000); }
+function mondayAnchor(){ const d=new Date(); const dow=d.getDay(); d.setDate(d.getDate()+(dow===0?-6:1-dow)); return keyOf(d); } // Monday of the current week
 
 /* ============================ Record access ============================ */
 function recFor(k){
@@ -420,7 +425,12 @@ function recFor(k){
   if(!r.am) r.am={}; if(!r.pm) r.pm={}; if(!r.mode) r.mode="full"; if(r.note===undefined) r.note=""; if(!r.spf) r.spf=[];
   return r;
 }
-function amListFor(k){ const r=state.records[k]; const mode=r&&r.mode==="lazy"?"lazy":"full"; return mode==="lazy"?state.routines.amLazy:state.routines.amFull; }
+function amModeList(mode){
+  if(mode==="lazy") return state.routines.amLazy;
+  if(mode==="home") return state.routines.amFull.filter(id=> state.products[id] && state.products[id].kind!=="sunscreen");
+  return state.routines.amFull;
+}
+function amListFor(k){ const r=state.records[k]; return amModeList((r&&r.mode)||"full"); }
 function amDone(k){ const r=state.records[k]; if(!r) return false; const list=amListFor(k); return list.length>0 && list.every(id=>r.am&&r.am[id]); }
 function pmDone(k){ const r=state.records[k]; if(!r) return false; const list=state.routines.pm; return list.length>0 && list.every(id=>r.pm&&r.pm[id]); }
 function checkedActives(k){ const r=state.records[k]; if(!r||!r.pm) return []; return state.routines.actives.filter(id=>r.pm[id]); }
@@ -685,16 +695,20 @@ function conflictBannerHTML(){
 
 function amHTML(){
   const k=keyOf(selDate), r=recFor(k);
-  const mode = r.mode==="lazy"?"lazy":"full";
-  const list = mode==="lazy"?state.routines.amLazy:state.routines.amFull;
+  const mode = (r.mode==="lazy"||r.mode==="home")?r.mode:"full";
+  const list = amModeList(mode);
+  const hint = mode==="lazy" ? "Just the 3 essentials — still counts as your morning ✓"
+             : mode==="home" ? "Indoors all day — your usual morning minus sunscreen. Still counts as done ✓"
+             : "The complete morning line-up.";
   return `
   <div class="card am">
     <div class="sec-h am"><div class="dot"></div><h2>Morning</h2><div class="count">${list.filter(id=>r.am[id]).length}/${list.length}</div></div>
     <div class="modetoggle">
-      <button data-mode="full" class="${mode==="full"?"sel":""}">Full routine</button>
-      <button data-mode="lazy" class="${mode==="lazy"?"sel":""}">Lazy day</button>
+      <button data-mode="full" class="${mode==="full"?"sel":""}">Full</button>
+      <button data-mode="lazy" class="${mode==="lazy"?"sel":""}">Lazy</button>
+      <button data-mode="home" class="${mode==="home"?"sel":""}">Staying in</button>
     </div>
-    <div class="modehint">${mode==="lazy"?"Just the 3 essentials — still counts as your morning ✓":"The complete morning line-up. Both modes count as done."}</div>
+    <div class="modehint">${hint}</div>
     <div class="steps">${list.map(id=>stepHTML(id,"am")).join("")}</div>
     ${spfPanel()}
   </div>`;
@@ -703,6 +717,7 @@ function amHTML(){
 function spfPanel(){
   if(!isToday(selDate)) return "";
   const k=keyOf(selDate), r=recFor(k);
+  if(r.mode==="home") return "";                // no sunscreen on an indoor day
   if(!r.am["skin1004Sun"]) return "";           // only once SPF is applied
   const times=r.spf||[];
   const last=times.length ? times[times.length-1] : null;
@@ -802,9 +817,13 @@ function settingsHTML(){
     return o;
   };
   const tonightIdx=rotIndexFor(new Date());
-  const rotRows=state.rotation.map((v,i)=>`
-    <div class="sched-row"><div class="sd" style="width:70px;${i===tonightIdx?"color:var(--active-ink)":""}">${i===tonightIdx?"Tonight":"Night "+(i+1)}</div>
-      <select data-rot="${i}">${rotOpts(v)}</select></div>`).join("");
+  const RWEEK=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  const rotRows=state.rotation.map((v,i)=>{
+    const lbl = state.rotation.length===7 ? RWEEK[i] : "Night "+(i+1);
+    const now = i===tonightIdx;
+    return `<div class="sched-row"><div class="sd" style="width:64px;${now?"color:var(--active-ink);font-weight:800":""}">${lbl}${now?" •":""}</div>
+      <select data-rot="${i}">${rotOpts(v)}</select></div>`;
+  }).join("");
 
   const listBlock=(title,listKey)=>{
     const items=state.routines[listKey].map(id=>{
@@ -844,7 +863,7 @@ function settingsHTML(){
 
       <div class="set-block">
         <h3>Evening active rotation</h3>
-        <div class="modehint" style="text-align:left;margin:0 0 8px">The cycle repeats automatically, night after night — nothing to pick day-to-day. Tonight is <b>Night ${tonightIdx+1}</b> of ${state.rotation.length}.</div>
+        <div class="modehint" style="text-align:left;margin:0 0 8px">${state.rotation.length===7?"Each active runs on the same weekday every week — nothing to pick day to day. Tonight is <b>"+WD_LONG[new Date().getDay()]+"</b>.":"The cycle repeats automatically, night after night. Tonight is <b>Night "+(tonightIdx+1)+"</b> of "+state.rotation.length+"."}</div>
         <div>${rotRows}</div>
         <div class="bkp" style="margin-top:10px">
           <button data-rotadd="1">＋ Add a night</button>
@@ -974,7 +993,7 @@ document.addEventListener("click",(e)=>{
 
   if(t.closest("[data-reset]")){
     if(confirm("Reset ALL products, schedule and check-off history to defaults? This can't be undone.")){
-      state=defaultState(); state.startDate=keyOf(new Date()); state.rotationStart=keyOf(new Date()); selDate=new Date(); save(); render();
+      state=defaultState(); state.startDate=keyOf(new Date()); state.rotationStart=mondayAnchor(); selDate=new Date(); save(); render();
     }
     return;
   }
@@ -1093,7 +1112,7 @@ function importBackup(file){
       if(confirm("Replace your current data with this backup?")){
         state=migrate(mergeState(data));
         if(!state.startDate) state.startDate=keyOf(new Date());
-        if(!state.rotationStart) state.rotationStart=keyOf(new Date());
+        if(!state.rotationStart) state.rotationStart=mondayAnchor();
         selDate=new Date(); save(); render(); toast("✓ Backup restored");
       }
     }catch(e){ toast("That doesn't look like a Glow backup file"); }
@@ -1103,7 +1122,7 @@ function importBackup(file){
 
 /* ============================ Go ============================ */
 if(!state.startDate) state.startDate=keyOf(new Date());
-if(!state.rotationStart) state.rotationStart=keyOf(new Date());
+if(!state.rotationStart) state.rotationStart=mondayAnchor();
 save();   // also persists any just-run migration
 render();
 </script>
