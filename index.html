@@ -341,7 +341,7 @@ function defaultProducts(){
 
 function defaultState(){
   return {
-    v:4,
+    v:5,
     stage:2,
     startDate:null,          // first launch (set on load)
     unlocked:{reedle:true, mandelic:true, zeropore:true},
@@ -351,7 +351,7 @@ function defaultState(){
     products:defaultProducts(),
     routines:{
       amFull:["amCleanse","carrotPad","galacNiacin","puritoCream","skin1004Sun"],
-      amLazy:["manyoFoam","puritoCream","skin1004Sun"],
+      amLazy:["lazySplash","puritoCream","skin1004Sun"],
       pm:["manyoOil","manyoFoam","carrotPad","galacNiacin","genabelle","puritoCream"],
       actives:["reedle","mandelic","zeropore"]
     },
@@ -400,6 +400,12 @@ function migrate(st){
   if(!st.v || st.v<4){
     st.rotationStart=mondayAnchor();   // pin Night 1 (index 0) to Monday
     st.v=4;
+  }
+  if(!st.v || st.v<5){
+    // Lazy morning starts with a gentle water splash (barrier-friendly) instead of foam
+    st.routines.amLazy=(st.routines.amLazy||[]).map(id=> id==="manyoFoam" ? "lazySplash" : id);
+    if(!st.routines.amLazy.includes("lazySplash")) st.routines.amLazy.unshift("lazySplash");
+    st.v=5;
   }
   return st;
 }
